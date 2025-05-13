@@ -1,0 +1,324 @@
+name: "LLM Coder Composite Action"
+description: "llm-coder を使った自動修正・コミット・PR作成を行う Composite Action"
+inputs:
+  llm_comment_language:
+    description: "LLMがGithubにコメントするときの言語"
+    required: false
+    default: "Japanese"
+  llm_coder_command:
+    description: "Github Issue コメントや Pull request コメントで llm-coder を呼び出すときのキーワード"
+    required: false
+  llm_model:
+    description: "利用するLLMモデル名"
+    required: false
+  skip_commit_and_pr:
+    description: "コミット・PR作成をスキップする場合true"
+    required: false
+    default: "false"
+  extra_pip:
+    description: "追加でインストールする pip パッケージ (スペース区切り)"
+    required: false
+    default: ""
+  github_token:
+    description: "GitHub APIのアクセストークン"
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.13"
+    - name: Setup LLM Coder from source
+      shell: bash
+      run: |
+        mkdir -p /tmp/llm-coder
+        git clone https://github.com/igtm/llm_coder.git /tmp/llm-coder
+        cd /tmp/llm-coder
+        python -m pip install --upgrade pip
+        pip install --editable .
+        if [ -n "${{ inputs.extra_pip }}" ]; then
+          pip install ${{ inputs.extra_pip }}
+        fi
+    - name: Get GitHub context and Generate Problem Statement
+      id: github_context
+      shell: bash
+      run: |
+        # GitHubイベントコンテキストから必要な情報を抽出
+        if [ -f "$GITHUB_EVENT_PATH" ]; then
+          # イベントタイプの特定
+          EVENT_TYPE=$(jq -r '.action // ""' $GITHUB_EVENT_PATH)
+          EVENT_NAME=$(jq -r '.["event_name"] // ""' $GITHUB_EVENT_PATH)
+          echo "event_name=$EVENT_NAME" >> $GITHUB_OUTPUT
+          
+          # PRかIssueかの判定
+          if jq -e '.issue.pull_request' $GITHUB_EVENT_PATH >/dev/null 2>&1; then
+            ISSUE_TYPE="pr"
+          elif jq -e '.pull_request' $GITHUB_EVENT_PATH >/dev/null 2>&1; then
+            ISSUE_TYPE="pr"
+          else
+            ISSUE_TYPE="issue"
+          fi
+          echo "issue_type=$ISSUE_TYPE" >> $GITHUB_OUTPUT
+          
+          # 課題番号の取得
+          ISSUE_NUMBER=$(jq -r '.issue.number // .pull_request.number // "0"' $GITHUB_EVENT_PATH)
+          echo "issue_number=$ISSUE_NUMBER" >> $GITHUB_OUTPUT
+          
+          # コメントIDの取得
+          COMMENT_ID=$(jq -r '.comment.id // "0"' $GITHUB_EVENT_PATH)
+          echo "comment_id=$COMMENT_ID" >> $GITHUB_OUTPUT
+          
+          # 課題URLの取得
+          ISSUE_URL=$(jq -r '.issue.html_url // .pull_request.html_url // ""' $GITHUB_EVENT_PATH)
+          echo "issue_url=$ISSUE_URL" >> $GITHUB_OUTPUT
+          
+          # コメントURLの取得
+          TRIGGER_COMMENT_URL=$(jq -r '.comment.html_url // ""' $GITHUB_EVENT_PATH)
+          echo "trigger_comment_url=$TRIGGER_COMMENT_URL" >> $GITHUB_OUTPUT
+          
+          # リポジトリ情報
+          REPO_OWNER=$(jq -r '.repository.owner.login // ""' $GITHUB_EVENT_PATH)
+          echo "repo_owner=$REPO_OWNER" >> $GITHUB_OUTPUT
+          
+          REPO_NAME=$(jq -r '.repository.name // ""' $GITHUB_EVENT_PATH)
+          echo "repo_name=$REPO_NAME" >> $GITHUB_OUTPUT
+          
+          # デフォルトブランチ
+          DEFAULT_BRANCH=$(jq -r '.repository.default_branch // "main"' $GITHUB_EVENT_PATH)
+          echo "default_branch=$DEFAULT_BRANCH" >> $GITHUB_OUTPUT
+          
+          # コマンド名取得
+          LLM_CODER_COMMAND="${{ inputs.llm_coder_command }}"
+          
+          # 問題文の生成
+          if [ "$EVENT_NAME" = "issue_comment" ]; then
+            if [ "$ISSUE_TYPE" = "pr" ]; then
+              # PRへのコメントの場合
+              PR_NUMBER=$ISSUE_NUMBER
+              
+              # コメント本文からコマンドを除去
+              COMMENT_BODY=$(jq -r '.comment.body // ""' $GITHUB_EVENT_PATH | sed "s|$LLM_CODER_COMMAND||g")
+              
+              # 変更ファイル一覧を取得
+              CHANGED_FILES=$(gh api repos/$REPO_OWNER/$REPO_NAME/pulls/$PR_NUMBER/files --jq '.[].filename' | awk '{print "- " $0}')
+              
+              PROBLEM_STATEMENT="以下の指示に従ってコードを修正してください。
+              指示: $COMMENT_BODY
+              
+              このPull Requestで変更されたファイル一覧:
+              $CHANGED_FILES"
+            else
+              # Issueへのコメントの場合
+              ISSUE_TITLE=$(jq -r '.issue.title // ""' $GITHUB_EVENT_PATH)
+              ISSUE_BODY=$(jq -r '.issue.body // ""' $GITHUB_EVENT_PATH)
+              COMMENT_BODY=$(jq -r '.comment.body // ""' $GITHUB_EVENT_PATH | sed "s|$LLM_CODER_COMMAND||g")
+              
+              PROBLEM_STATEMENT="以下のGithub Issueの内容を解決できるようにコードを修正してください
+              Issue のタイトル: $ISSUE_TITLE
+              Issue の本文: $ISSUE_BODY
+              コメント: $COMMENT_BODY"
+            fi
+          elif [ "$EVENT_NAME" = "pull_request_review_comment" ]; then
+            # PR review commentの場合
+            COMMENT_BODY=$(jq -r '.comment.body // ""' $GITHUB_EVENT_PATH | sed "s|$LLM_CODER_COMMAND||g")
+            COMMENT_PATH=$(jq -r '.comment.path // ""' $GITHUB_EVENT_PATH)
+            COMMENT_LINE=$(jq -r '.comment.line // ""' $GITHUB_EVENT_PATH)
+            DIFF_HUNK=$(jq -r '.comment.diff_hunk // ""' $GITHUB_EVENT_PATH)
+            
+            PROBLEM_STATEMENT="以下の指示に従って指示がなされたファイルのみを修正してください:
+            $COMMENT_BODY
+            
+            指示がなされたファイル: $COMMENT_PATH
+            指示がなされた行番号: $COMMENT_LINE
+            
+            指示がなされたコードの周辺差分: $DIFF_HUNK
+            
+            注意：指示がなされたファイル以外の変更は行わないでください。基本は、指示がなされた行番号付近のコードを修正してください。"
+          else
+            PROBLEM_STATEMENT="コードの修正を行ってください。"
+          fi
+          
+          # 問題文をエスケープして出力
+          ESCAPED_PROBLEM_STATEMENT=$(echo "$PROBLEM_STATEMENT" | sed ':a;N;$!ba;s/\n/\\n/g')
+          echo "problem_statement=$ESCAPED_PROBLEM_STATEMENT" >> $GITHUB_OUTPUT
+        fi
+    - name: React to trigger comment
+      shell: bash
+      run: |
+        EVENT_NAME="${{ steps.github_context.outputs.event_name }}"
+        COMMENT_ID="${{ steps.github_context.outputs.comment_id }}"
+        REPO_OWNER="${{ steps.github_context.outputs.repo_owner }}"
+        REPO_NAME="${{ steps.github_context.outputs.repo_name }}"
+        ISSUE_NUMBER="${{ steps.github_context.outputs.issue_number }}"
+        
+        if [ -n "$COMMENT_ID" ] && [ "$COMMENT_ID" != "0" ]; then
+          echo "コメントID: $COMMENT_ID に対して👀リアクションを追加します"
+          
+          if [ "$EVENT_NAME" = "pull_request_review_comment" ]; then
+            # PRのdiffコメントの場合
+            gh api \
+              --method POST \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "/repos/$REPO_OWNER/$REPO_NAME/pulls/comments/$COMMENT_ID/reactions" \
+              -f content="eyes"
+          else
+            # Issue/PRコメントの場合
+            gh api \
+              --method POST \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "/repos/$REPO_OWNER/$REPO_NAME/issues/comments/$COMMENT_ID/reactions" \
+              -f content="eyes"
+          fi
+          
+          echo "👀リアクションを追加しました"
+        else
+          echo "コメントIDが見つからないか、有効ではありません。リアクションを追加しません。"
+        fi
+      env:
+        GITHUB_TOKEN: ${{ inputs.github_token }}
+      continue-on-error: true
+    - name: Prepare Working Branch
+      id: prepare_branch
+      shell: bash
+      run: |
+        if [ "${{ steps.github_context.outputs.issue_type }}" = "issue" ]; then
+          echo "ISSUE_TYPE is 'issue'. Creating a new branch."
+          NEW_BRANCH_NAME="LLM-Coder-fix-issue-${{ steps.github_context.outputs.issue_number }}-$(echo $RANDOM | md5sum | cut -c1-8)"
+          git checkout -b "$NEW_BRANCH_NAME"
+          echo "branch_name=${NEW_BRANCH_NAME}" >> $GITHUB_OUTPUT
+          echo "Created and checked out new branch: $NEW_BRANCH_NAME"
+        elif [ "${{ steps.github_context.outputs.issue_type }}" = "pr" ]; then
+          echo "ISSUE_TYPE is 'pr'. Checking out feature branch."
+          PR_NUMBER=${{ steps.github_context.outputs.issue_number }}
+          PR_DATA=$(gh pr view $PR_NUMBER --json headRefName --repo "${{ steps.github_context.outputs.repo_owner }}/${{ steps.github_context.outputs.repo_name }}")
+          PR_BRANCH_NAME=$(echo $PR_DATA | jq -r .headRefName)
+          git fetch origin "$PR_BRANCH_NAME"
+          git checkout "$PR_BRANCH_NAME"
+          echo "branch_name=${PR_BRANCH_NAME}" >> $GITHUB_OUTPUT
+          echo "Fetched and checked out PR branch: $PR_BRANCH_NAME"
+        else
+          echo "エラー: 不明なISSUE_TYPE ('${{ steps.github_context.outputs.issue_type }}'). ブランチを準備できません."
+          exit 1
+        fi
+      env:
+        GITHUB_TOKEN: ${{ inputs.github_token }}
+    - name: Run LLM Coder
+      id: llm_coder_run
+      shell: bash
+      run: |
+        PROBLEM_STATEMENT="${{ steps.github_context.outputs.problem_statement }}"
+        llm-coder "$PROBLEM_STATEMENT" -o result.txt
+        if [ -f result.txt ]; then
+          result_content=$(sed ':a;N;$!ba;s/\n/\\n/g' result.txt)
+          echo "result_content=${result_content}" >> $GITHUB_OUTPUT
+          rm result.txt
+        else
+          echo "result_content=" >> $GITHUB_OUTPUT
+        fi
+    - name: Prepare Git and Push Changes
+      if: ${{ inputs.skip_commit_and_pr != 'true' }}
+      id: git_changes
+      shell: bash
+      run: |
+        git config user.email "llm-coder-bot@users.noreply.github.com" && git config user.name "LLM-Coder"
+        git status
+        git add .
+        git status
+        if ! git diff --staged --quiet; then
+          echo "SKIP_REMAINING=false" >> $GITHUB_ENV
+        else
+          echo "SKIP_REMAINING=true" >> $GITHUB_ENV
+        fi
+    - name: Generate Commit Message and Commit
+      if: ${{ env.SKIP_REMAINING != 'true' && inputs.skip_commit_and_pr != 'true' }}
+      shell: bash
+      env:
+        LLM_COMMENT_LANGUAGE: ${{ inputs.llm_comment_language }}
+        LLM_MODEL: ${{ inputs.llm_model }}
+        BRANCH_NAME: ${{ steps.prepare_branch.outputs.branch_name }}
+      run: |
+        diff=$(git diff --staged)
+        if [ -z "$diff" ]; then
+          exit 0
+        fi
+        prompt="Generate a very concise, one-line commit message (less than 50 characters if possible, max 72) in $LLM_COMMENT_LANGUAGE for the following git diff. Do not include any prefixes like \"feat:\", \"fix:\", etc. Just the message itself.\n\nGit diff:\n\`\`\`diff\n$diff\n\`\`\`"
+        commitMessage="Automated changes"
+        if command -v llm-coder-litellm > /dev/null; then
+          llmResult=$(echo -e "$prompt" | llm-coder-litellm --timeout 60 ${LLM_MODEL:+--model $LLM_MODEL} | head -n1)
+          commitMessage="${llmResult:-$commitMessage}"
+        fi
+        finalCommitMessage="${commitMessage} - Fixed by LLM-Coder"
+        git commit -m "$finalCommitMessage"
+        git push origin "$BRANCH_NAME"
+    - name: Create Pull Request
+      if: ${{ steps.github_context.outputs.event_name == 'issue_comment' && steps.github_context.outputs.issue_type == 'issue' && env.SKIP_REMAINING != 'true' && inputs.skip_commit_and_pr != 'true' }}
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.github_token }}
+        BRANCH_NAME: ${{ steps.prepare_branch.outputs.branch_name }}
+        ISSUE_NUMBER: ${{ steps.github_context.outputs.issue_number }}
+        ISSUE_URL: ${{ steps.github_context.outputs.issue_url }}
+        TRIGGER_COMMENT_URL: ${{ steps.github_context.outputs.trigger_comment_url }}
+        LLM_COMMENT_LANGUAGE: ${{ inputs.llm_comment_language }}
+        LLM_MODEL: ${{ inputs.llm_model }}
+        REPO_OWNER: ${{ steps.github_context.outputs.repo_owner }}
+        REPO_NAME: ${{ steps.github_context.outputs.repo_name }}
+        DEFAULT_BRANCH: ${{ steps.github_context.outputs.default_branch }}
+      run: |
+        # Issueのタイトルを取得
+        issueTitle=$(gh issue view $ISSUE_NUMBER --repo "$REPO_OWNER/$REPO_NAME" --json title -q .title || echo "llm-coder")
+        
+        # diffコンテンツを取得
+        diff=$(git diff HEAD^)
+        
+        # PRの説明文を生成
+        generatedDescription="Automated code changes by LLM Coder."
+        if command -v llm-coder-litellm > /dev/null; then
+          prompt="Generate a concise Pull Request description in $LLM_COMMENT_LANGUAGE based on the following git diff. Explain the main changes and their purpose. Format it nicely using Markdown.\n\nGit diff:\n\`\`\`diff\n$diff\n\`\`\`"
+          generatedDescription=$(echo -e "$prompt" | llm-coder-litellm --timeout 60 ${LLM_MODEL:+--model $LLM_MODEL})
+        fi
+        
+        prBody="${generatedDescription}\n\n---\n*Created by LLM Coder based on [Issue #${ISSUE_NUMBER}](${ISSUE_URL}).*\n*Triggered by [comment](${TRIGGER_COMMENT_URL}).*"
+        
+        # Pull Requestを作成
+        gh pr create \
+          --repo "$REPO_OWNER/$REPO_NAME" \
+          --title "LLM-Coder[bot]: ${issueTitle}" \
+          --body "$prBody" \
+          --head "$BRANCH_NAME" \
+          --base "$DEFAULT_BRANCH" \
+          --draft
+      continue-on-error: true
+    - name: Add PR Comment
+      if: ${{ (steps.github_context.outputs.event_name == 'issue_comment' && steps.github_context.outputs.issue_type == 'pr') || steps.github_context.outputs.event_name == 'pull_request_review_comment' }}
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.github_token }}
+        ISSUE_NUMBER: ${{ steps.github_context.outputs.issue_number }}
+        REPO_OWNER: ${{ steps.github_context.outputs.repo_owner }}
+        REPO_NAME: ${{ steps.github_context.outputs.repo_name }}
+        COMMENT_ID: ${{ steps.github_context.outputs.comment_id }}
+        EVENT_NAME: ${{ steps.github_context.outputs.event_name }}
+      run: |
+        # LLM Coderの実行結果を取得
+        result_content="${{ steps.llm_coder_run.outputs.result_content }}"
+        result_content=$(echo "$result_content" | sed 's/TASK_COMPLETE//g' | xargs)
+        commentBody="🤖 LLM Coder applied the following changes based on your request:\n\n${result_content}"
+        
+        # PRのdiffコメントの場合は、そのスレッドに返信
+        if [ "$EVENT_NAME" = "pull_request_review_comment" ] && [ -n "$COMMENT_ID" ]; then
+          gh api \
+            --method POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "/repos/$REPO_OWNER/$REPO_NAME/pulls/$ISSUE_NUMBER/comments/$COMMENT_ID/replies" \
+            -f body="$commentBody"
+        else
+          # それ以外の場合はPR全体にコメント
+          gh issue comment "$ISSUE_NUMBER" --repo "$REPO_OWNER/$REPO_NAME" --body "$commentBody"
+        fi
+      continue-on-error: true
