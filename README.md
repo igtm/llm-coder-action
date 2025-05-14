@@ -29,12 +29,9 @@ permissions:
   pull-requests: write
   issues: write
 
-env:
-  LLM_CODER_COMMAND: "/llm-coder"
-
 jobs:
   llm-coder:
-    if: contains(github.event.comment.body, env.LLM_CODER_COMMAND)
+    if: contains(github.event.comment.body, '/llm-coder') && github.event.comment.user.type != 'Bot'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
@@ -43,10 +40,11 @@ jobs:
       - name: Run llm-coder
         uses: igtm/llm-coder-action@v1
         with:
-          llm_coder_command: ${{ env.LLM_CODER_COMMAND }}
+          llm_coder_command: '/llm-coder'
           llm_model: ${{ vars.LLM_MODEL || 'gpt-4o' }}
           github_token: ${{ steps.github_app_token.outputs.token }}
           extra_pip: "boto3 poetry"
         # env:
-        #   OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        #   OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}  # For OpenAI users
+        #   AWS_REGION_NAME: ${{ vars.AWS_REGION_NAME }}   # For Bedrock users
 ```
