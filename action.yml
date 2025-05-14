@@ -49,7 +49,7 @@ runs:
         if [ -f "$GITHUB_EVENT_PATH" ]; then
           # イベントタイプの特定
           EVENT_TYPE=$(jq -r '.action // ""' $GITHUB_EVENT_PATH)
-          EVENT_NAME=$(jq -r '.["event_name"] // ""' $GITHUB_EVENT_PATH)
+          EVENT_NAME="${GITHUB_EVENT_NAME}"
           echo "event_name=$EVENT_NAME" >> $GITHUB_OUTPUT
           
           # PRかIssueかの判定
