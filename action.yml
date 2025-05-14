@@ -26,21 +26,6 @@ inputs:
 runs:
   using: "composite"
   steps:
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: "3.13"
-    - name: Setup LLM Coder from source
-      shell: bash
-      run: |
-        mkdir -p /tmp/llm-coder
-        git clone https://github.com/igtm/llm_coder.git /tmp/llm-coder
-        cd /tmp/llm-coder
-        python -m pip install --upgrade pip
-        pip install --editable .
-        if [ -n "${{ inputs.extra_pip }}" ]; then
-          pip install ${{ inputs.extra_pip }}
-        fi
     - name: Get GitHub context and Generate Problem Statement
       id: github_context
       shell: bash
@@ -61,6 +46,12 @@ runs:
             ISSUE_TYPE="issue"
           fi
           echo "issue_type=$ISSUE_TYPE" >> $GITHUB_OUTPUT
+          
+          # コメント投稿者の情報を取得
+          COMMENT_USER_LOGIN=$(jq -r '.comment.user.login // ""' $GITHUB_EVENT_PATH)
+          COMMENT_USER_TYPE=$(jq -r '.comment.user.type // ""' $GITHUB_EVENT_PATH)
+          echo "comment_user_login=$COMMENT_USER_LOGIN" >> $GITHUB_OUTPUT
+          echo "comment_user_type=$COMMENT_USER_TYPE" >> $GITHUB_OUTPUT
           
           # 課題番号の取得
           ISSUE_NUMBER=$(jq -r '.issue.number // .pull_request.number // "0"' $GITHUB_EVENT_PATH)
@@ -144,7 +135,22 @@ runs:
           ESCAPED_PROBLEM_STATEMENT=$(echo "$PROBLEM_STATEMENT" | sed ':a;N;$!ba;s/\n/\\n/g')
           echo "problem_statement=$ESCAPED_PROBLEM_STATEMENT" >> $GITHUB_OUTPUT
         fi
+    - name: Check if commenter is not a bot
+      id: check_commenter
+      shell: bash
+      run: |
+        USER_TYPE="${{ steps.github_context.outputs.comment_user_type }}"
+        USER_LOGIN="${{ steps.github_context.outputs.comment_user_login }}"
+        
+        if [ "$USER_TYPE" = "Bot" ]; then
+          echo "is_bot=true" >> $GITHUB_OUTPUT
+          echo "コメント投稿者 $USER_LOGIN はボットのため、処理をスキップします。"
+        else
+          echo "is_bot=false" >> $GITHUB_OUTPUT
+          echo "コメント投稿者 $USER_LOGIN はボットではないため、処理を続行します。"
+        fi
     - name: React to trigger comment
+      if: ${{ steps.check_commenter.outputs.is_bot == 'false' }}
       shell: bash
       run: |
         EVENT_NAME="${{ steps.github_context.outputs.event_name }}"
@@ -182,6 +188,7 @@ runs:
         GITHUB_TOKEN: ${{ inputs.github_token }}
       continue-on-error: true
     - name: Prepare Working Branch
+      if: ${{ steps.check_commenter.outputs.is_bot == 'false' }}
       id: prepare_branch
       shell: bash
       run: |
@@ -206,7 +213,25 @@ runs:
         fi
       env:
         GITHUB_TOKEN: ${{ inputs.github_token }}
+    - name: Set up Python
+      if: ${{ steps.check_commenter.outputs.is_bot == 'false' }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.13"
+    - name: Setup LLM Coder from source
+      if: ${{ steps.check_commenter.outputs.is_bot == 'false' }}
+      shell: bash
+      run: |
+        mkdir -p /tmp/llm-coder
+        git clone https://github.com/igtm/llm_coder.git /tmp/llm-coder
+        cd /tmp/llm-coder
+        python -m pip install --upgrade pip
+        pip install --editable .
+        if [ -n "${{ inputs.extra_pip }}" ]; then
+          pip install ${{ inputs.extra_pip }}
+        fi
     - name: Run LLM Coder
+      if: ${{ steps.check_commenter.outputs.is_bot == 'false' }}
       id: llm_coder_run
       shell: bash
       run: |
@@ -220,7 +245,7 @@ runs:
           echo "result_content=" >> $GITHUB_OUTPUT
         fi
     - name: Prepare Git and Push Changes
-      if: ${{ inputs.skip_commit_and_pr != 'true' }}
+      if: ${{ steps.check_commenter.outputs.is_bot == 'false' && inputs.skip_commit_and_pr != 'true' }}
       id: git_changes
       shell: bash
       run: |
@@ -234,7 +259,7 @@ runs:
           echo "SKIP_REMAINING=true" >> $GITHUB_ENV
         fi
     - name: Generate Commit Message and Commit
-      if: ${{ env.SKIP_REMAINING != 'true' && inputs.skip_commit_and_pr != 'true' }}
+      if: ${{ steps.check_commenter.outputs.is_bot == 'false' && env.SKIP_REMAINING != 'true' && inputs.skip_commit_and_pr != 'true' }}
       shell: bash
       env:
         LLM_COMMENT_LANGUAGE: ${{ inputs.llm_comment_language }}
@@ -255,7 +280,7 @@ runs:
         git commit -m "$finalCommitMessage"
         git push origin "$BRANCH_NAME"
     - name: Create Pull Request
-      if: ${{ steps.github_context.outputs.event_name == 'issue_comment' && steps.github_context.outputs.issue_type == 'issue' && env.SKIP_REMAINING != 'true' && inputs.skip_commit_and_pr != 'true' }}
+      if: ${{ steps.check_commenter.outputs.is_bot == 'false' && steps.github_context.outputs.event_name == 'issue_comment' && steps.github_context.outputs.issue_type == 'issue' && env.SKIP_REMAINING != 'true' && inputs.skip_commit_and_pr != 'true' }}
       shell: bash
       env:
         GITHUB_TOKEN: ${{ inputs.github_token }}
@@ -294,7 +319,7 @@ runs:
           --draft
       continue-on-error: true
     - name: Add PR Comment
-      if: ${{ (steps.github_context.outputs.event_name == 'issue_comment' && steps.github_context.outputs.issue_type == 'pr') || steps.github_context.outputs.event_name == 'pull_request_review_comment' }}
+      if: ${{ steps.check_commenter.outputs.is_bot == 'false' && (steps.github_context.outputs.event_name == 'issue_comment' && steps.github_context.outputs.issue_type == 'pr') || steps.github_context.outputs.event_name == 'pull_request_review_comment' }}
       shell: bash
       env:
         GITHUB_TOKEN: ${{ inputs.github_token }}
