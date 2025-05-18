@@ -31,7 +31,7 @@ permissions:
 
 jobs:
   llm-coder:
-    if: contains(github.event.comment.body, '/llm-coder') && github.event.comment.user.type != 'Bot'
+    if: startsWith(github.event.comment.body, '/llm-coder') && github.event.comment.user.type != 'Bot'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
