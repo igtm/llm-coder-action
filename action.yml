@@ -236,7 +236,9 @@ runs:
       shell: bash
       run: |
         PROBLEM_STATEMENT="${{ steps.github_context.outputs.problem_statement }}"
-        llm-coder "$PROBLEM_STATEMENT" -o result.txt
+        # Escape backticks to prevent command injection
+        ESCAPED_PROBLEM_STATEMENT=$(echo "$PROBLEM_STATEMENT" | sed 's/`/\\`/g')
+        llm-coder "$ESCAPED_PROBLEM_STATEMENT" -o result.txt
         if [ -f result.txt ]; then
           result_content=$(sed ':a;N;$!ba;s/\n/\\n/g' result.txt)
           echo "result_content=${result_content}" >> $GITHUB_OUTPUT
