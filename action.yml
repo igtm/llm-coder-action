@@ -240,7 +240,14 @@ runs:
         ESCAPED_PROBLEM_STATEMENT=$(echo "$PROBLEM_STATEMENT" | sed 's/`/\\`/g')
         llm-coder "$ESCAPED_PROBLEM_STATEMENT" -o result.txt
         if [ -f result.txt ]; then
-          result_content=$(sed ':a;N;$!ba;s/\n/\\n/g' result.txt)
+          # Escape backticks and other special chars for shell safety
+          result_content=$(cat result.txt | \
+            sed 's/`/\\`/g' | \
+            sed 's/\$/\\$/g' | \
+            sed 's/"/\\"/g' | \
+            sed 's/\\/\\\\/g' | \
+            sed 's/!/\\!/g' | \
+            sed ':a;N;$!ba;s/\n/\\n/g')
           echo "result_content=${result_content}" >> $GITHUB_OUTPUT
           rm result.txt
         else
