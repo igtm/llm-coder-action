@@ -366,6 +366,31 @@ runs:
 
         echo "# 🤖 LLM Coder Results" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
+
+        # Add trigger information
+        echo "## Trigger Information" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+
+        ISSUE_URL="${{ steps.github_context.outputs.issue_url }}"
+        TRIGGER_COMMENT_URL="${{ steps.github_context.outputs.trigger_comment_url }}"
+        EVENT_NAME="${{ steps.github_context.outputs.event_name }}"
+        ISSUE_TYPE="${{ steps.github_context.outputs.issue_type }}"
+        
+        if [ -n "$ISSUE_URL" ]; then
+          if [ "$ISSUE_TYPE" = "pr" ]; then
+            echo "- 📋 **Pull Request**: [$ISSUE_URL]($ISSUE_URL)" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- 📋 **Issue**: [$ISSUE_URL]($ISSUE_URL)" >> $GITHUB_STEP_SUMMARY
+          fi
+        fi
+
+        if [ -n "$TRIGGER_COMMENT_URL" ] && [ "$TRIGGER_COMMENT_URL" != "" ]; then
+          echo "- 💬 **Trigger Comment**: [$TRIGGER_COMMENT_URL]($TRIGGER_COMMENT_URL)" >> $GITHUB_STEP_SUMMARY
+        fi
+
+        echo "- 🎯 **Event Type**: $EVENT_NAME" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+
         echo "## Changes Applied" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
 
