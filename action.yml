@@ -361,7 +361,8 @@ runs:
       shell: bash
       run: |
         result_content="${{ steps.llm_coder_run.outputs.result_content }}"
-        result_content=$(echo "$result_content" | sed 's/TASK_COMPLETE//g')
+        # Remove TASK_COMPLETE and escape backticks to prevent command execution
+        result_content=$(echo "$result_content" | sed 's/TASK_COMPLETE//g' | sed 's/`/\\`/g')
 
         echo "# 🤖 LLM Coder Results" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
@@ -369,7 +370,8 @@ runs:
         echo "" >> $GITHUB_STEP_SUMMARY
 
         if [ -n "$result_content" ] && [ "$result_content" != "" ]; then
-          echo "$result_content" >> $GITHUB_STEP_SUMMARY
+          # Use printf to safely output the content with escaped backticks
+          printf '%s\n' "$result_content" >> $GITHUB_STEP_SUMMARY
         else
           echo "No changes were made by LLM Coder." >> $GITHUB_STEP_SUMMARY
         fi
