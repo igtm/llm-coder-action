@@ -290,6 +290,7 @@ runs:
         git push origin "$BRANCH_NAME"
     - name: Create Pull Request
       if: ${{ steps.check_commenter.outputs.is_bot == 'false' && steps.github_context.outputs.event_name == 'issue_comment' && steps.github_context.outputs.issue_type == 'issue' && env.SKIP_REMAINING != 'true' && inputs.skip_commit_and_pr != 'true' }}
+      id: create_pr
       shell: bash
       env:
         GITHUB_TOKEN: ${{ inputs.github_token }}
@@ -316,16 +317,21 @@ runs:
           generatedDescription=$(echo -e "$prompt" | llm-coder-litellm --timeout 60 ${LLM_MODEL:+--model $LLM_MODEL})
         fi
         
-        prBody="${generatedDescription}\n\n---\n*Created by LLM Coder based on [Issue #${ISSUE_NUMBER}](${ISSUE_URL}).*\n*Triggered by [comment](${TRIGGER_COMMENT_URL}).*"
+        # GitHub Actions run URLを構築
+        GITHUB_RUN_URL="https://github.com/$REPO_OWNER/$REPO_NAME/actions/runs/$GITHUB_RUN_ID"
+        
+        prBody="${generatedDescription}\n\n---\n*Created by LLM Coder based on [Issue #${ISSUE_NUMBER}](${ISSUE_URL}).*\n*Triggered by [comment](${TRIGGER_COMMENT_URL}).*\n\n📊 **[View detailed results in GitHub Actions Summary](${GITHUB_RUN_URL})**"
         
         # Pull Requestを作成
-        gh pr create \
+        PR_URL=$(gh pr create \
           --repo "$REPO_OWNER/$REPO_NAME" \
           --title "LLM-Coder[bot]: ${issueTitle}" \
           --body "$prBody" \
           --head "$BRANCH_NAME" \
           --base "$DEFAULT_BRANCH" \
-          --draft
+          --draft)
+        
+        echo "pr_url=$PR_URL" >> $GITHUB_OUTPUT
       continue-on-error: true
     - name: Add PR Comment
       if: ${{ steps.check_commenter.outputs.is_bot == 'false' && (steps.github_context.outputs.event_name == 'issue_comment' && steps.github_context.outputs.issue_type == 'pr') || steps.github_context.outputs.event_name == 'pull_request_review_comment' }}
@@ -375,6 +381,7 @@ runs:
         TRIGGER_COMMENT_URL="${{ steps.github_context.outputs.trigger_comment_url }}"
         EVENT_NAME="${{ steps.github_context.outputs.event_name }}"
         ISSUE_TYPE="${{ steps.github_context.outputs.issue_type }}"
+        PR_URL="${{ steps.create_pr.outputs.pr_url }}"
         
         if [ -n "$ISSUE_URL" ]; then
           if [ "$ISSUE_TYPE" = "pr" ]; then
@@ -388,9 +395,14 @@ runs:
           echo "- 💬 **Trigger Comment**: [$TRIGGER_COMMENT_URL]($TRIGGER_COMMENT_URL)" >> $GITHUB_STEP_SUMMARY
         fi
 
+        if [ -n "$PR_URL" ] && [ "$PR_URL" != "" ]; then
+          echo "- 🔗 **Created Pull Request**: [$PR_URL]($PR_URL)" >> $GITHUB_STEP_SUMMARY
+        fi
+
         echo "- 🎯 **Event Type**: $EVENT_NAME" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
 
+        # Add result content
         echo "## Changes Applied" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
 
