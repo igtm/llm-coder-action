@@ -367,7 +367,7 @@ runs:
       shell: bash
       run: |
         # Write the result content to a temporary file to avoid shell injection
-        echo '${{ steps.llm_coder_run.outputs.result_content }}' > /tmp/result_content.txt
+        printf '%s\n' '${{ steps.llm_coder_run.outputs.result_content }}' > /tmp/result_content.txt
         
         # Process the content safely
         result_content=$(cat /tmp/result_content.txt | sed 's/TASK_COMPLETE//g')
@@ -408,10 +408,8 @@ runs:
         echo "" >> $GITHUB_STEP_SUMMARY
 
         if [ -s /tmp/result_content.txt ] && [ -n "$result_content" ]; then
-          # Write content safely using cat and here document
-          cat >> $GITHUB_STEP_SUMMARY << 'EOF'
-$result_content
-EOF
+          # Safely append the content to the summary
+          cat /tmp/result_content.txt | sed 's/TASK_COMPLETE//g' >> $GITHUB_STEP_SUMMARY
         else
           echo "No changes were made by LLM Coder." >> $GITHUB_STEP_SUMMARY
         fi
